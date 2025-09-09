@@ -164,37 +164,6 @@ class RealSense:
         # _R_cam_to_world 是 3x3 矩阵，points_m 是 Nx3
         return (cls._R_cam_to_world @ points_m.T).T + cls._extr_pos_m
 
-    @classmethod
-    def transform_points_rs_to_world(cls, points_rs_m: np.ndarray) -> np.ndarray:
-        """将RealSense原生坐标系下的点(米)直接转换到世界坐标系(米)。
-        
-        坐标系定义：
-        - RealSense原生：Z朝前，X朝右，Y朝下
-        - 相机坐标系：Z朝前，X朝右，Y朝上（用户坐标系）
-        - 世界坐标系：根据外参定义
-        
-        转换步骤：
-        1. RS原生 -> 相机坐标系（用户坐标系）
-        2. 相机坐标系 -> 世界坐标系
-        """
-        if points_rs_m.size == 0:
-            return points_rs_m
-        
-        # 步骤1：RS原生坐标系 -> 相机坐标系（用户坐标系）
-        # RS原生：Z朝前，X朝右，Y朝下
-        # 相机坐标系：Z朝前，X朝右，Y朝上
-        # 转换：X不变，Y取反，Z不变
-        R_rs_to_cam = np.array([
-            [1,  0,  0],
-            [0, -1,  0], 
-            [0,  0,  1]
-        ], dtype=np.float64)
-        
-        points_cam_m = points_rs_m @ R_rs_to_cam.T
-        
-        # 步骤2：相机坐标系 -> 世界坐标系
-        return cls.transform_points_cam_to_world(points_cam_m)
-
     def get_frames(self):
         """
         获取一对对齐的彩色和深度帧

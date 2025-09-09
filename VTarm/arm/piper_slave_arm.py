@@ -47,14 +47,14 @@ class PiperSlaveArmReader:
     - 连接 CAN 端口（不使能）
     - 读取高频反馈（位置、速度、电流等）
     - 读取控制目标（主臂对从臂的控制指令）
-    - 读取夹爪反馈与控制目标（支持自定义归一化/反归一化函数）
+    - 读取夹爪反馈与控制目标
 
     单位与约定：
     - 关节位置反馈来自 HighSpdInfo，单位为毫度（0.001 度）。本类默认对外提供弧度。
     - 关节速度反馈单位为 0.001 度/秒，本类默认对外提供弧度/秒。
-    - 夹爪反馈单位为微米（µm），本类默认对外提供毫米（mm），也可通过归一化函数转换。
+    - 夹爪反馈单位为微米（µm），本类默认对外提供毫米（mm）。
     - 控制目标中的关节采用毫度（0.001 度）表示；本类默认对外提供弧度。
-    - 控制目标中的夹爪采用 0.001 mm 表示；本类默认对外提供毫米（mm），也可归一化。
+    - 控制目标中的夹爪采用 0.001 mm 表示；本类默认对外提供毫米（mm）。
     """
 
     def __init__(
@@ -66,14 +66,8 @@ class PiperSlaveArmReader:
         dh_is_offset: int = 1,
         start_sdk_joint_limit: bool = False,
         start_sdk_gripper_limit: bool = False,
-        gripper_normalize_fn: Optional[Callable[[float], float]] = None,
-        gripper_denormalize_fn: Optional[Callable[[float], float]] = None,
     ) -> None:
-        """创建只读从臂读取器。
-
-        - gripper_normalize_fn(mm)->normalized：可选，将夹爪开合（单位 mm）映射为归一化数值的函数。
-        - gripper_denormalize_fn(normalized)->mm：可选，上述映射的逆函数（仅在需要对比/存储目标值时使用）。
-        """
+        """创建只读从臂读取器。"""
         self._piper = C_PiperInterface_V2(
             can_name=can_name,
             judge_flag=judge_flag,
@@ -82,8 +76,6 @@ class PiperSlaveArmReader:
             start_sdk_joint_limit=start_sdk_joint_limit,
             start_sdk_gripper_limit=start_sdk_gripper_limit,
         )
-        self._gripper_normalize_fn = gripper_normalize_fn
-        self._gripper_denormalize_fn = gripper_denormalize_fn
 
     # ----------------------------
     # 连接 / 断开
@@ -109,12 +101,11 @@ class PiperSlaveArmReader:
         self,
         *,
         return_radians: bool = True,
-        normalize_gripper: bool = False,
     ) -> List[float]:
         """读取 7 自由度位姿 [j1..j6, gripper]。
 
         - return_radians：True 则关节以弧度返回；False 则以度返回。
-        - normalize_gripper：True 且提供了归一化函数，则返回归一化夹爪；否则返回 mm。
+        - 夹爪返回毫米（mm）。
         """
         highspd = self._piper.GetArmHighSpdInfoMsgs()
         gripper_fdb = self._piper.GetArmGripperMsgs()
@@ -132,11 +123,7 @@ class PiperSlaveArmReader:
         else:
             joints = [_mdeg_to_deg(v) for v in joint_mdeg]
 
-        gripper_mm = _um_to_mm(gripper_fdb.gripper_state.grippers_angle)
-        if normalize_gripper and self._gripper_normalize_fn is not None:
-            gripper_value = float(self._gripper_normalize_fn(gripper_mm))
-        else:
-            gripper_value = float(gripper_mm)
+        gripper_value = float(_um_to_mm(gripper_fdb.gripper_state.grippers_angle))
 
         return [
             joints[0], joints[1], joints[2], joints[3], joints[4], joints[5], gripper_value
@@ -172,12 +159,11 @@ class PiperSlaveArmReader:
         self,
         *,
         return_radians: bool = True,
-        normalize_gripper: bool = False,
     ) -> List[float]:
         """读取 7 自由度控制目标 [j1..j6, gripper]。
 
         - return_radians：True 则关节以弧度返回；False 则以度返回。
-        - normalize_gripper：True 且提供了归一化函数，则返回归一化夹爪；否则返回 mm。
+        - 夹爪返回毫米（mm）。
         """
         joint_ctrl = self._piper.GetArmJointCtrl()
         gripper_ctrl = self._piper.GetArmGripperCtrl()
@@ -195,11 +181,7 @@ class PiperSlaveArmReader:
         else:
             joints = [_mdeg_to_deg(v) for v in joints_mdeg]
 
-        gripper_mm = _mm001_to_mm(gripper_ctrl.gripper_ctrl.grippers_angle)
-        if normalize_gripper and self._gripper_normalize_fn is not None:
-            gripper_value = float(self._gripper_normalize_fn(gripper_mm))
-        else:
-            gripper_value = float(gripper_mm)
+        gripper_value = float(_mm001_to_mm(gripper_ctrl.gripper_ctrl.grippers_angle))
 
         return [
             joints[0], joints[1], joints[2], joints[3], joints[4], joints[5], gripper_value
@@ -212,33 +194,28 @@ class PiperSlaveArmReader:
         self,
         *,
         return_radians: bool = True,
-        normalize_gripper: bool = False,
     ) -> Dict[str, object]:
         """获取一次性快照数据，便于记录或显示。
 
         返回字典包含：
         - joint_pos: List[float] 关节位置（6）
-        - gripper: float 夹爪值（mm 或 归一化）
+        - gripper: float 夹爪值（mm）
         - joint_speed: List[float] 关节速度（6）
         - joint_ctrl: List[float] 控制目标关节（6）
-        - gripper_ctrl: float 控制目标夹爪（mm 或 归一化）
+        - gripper_ctrl: float 控制目标夹爪（mm）
         - fps_highspd: float 高速反馈帧率（Hz）
         - fps_gripper: float 夹爪反馈帧率（Hz）
         """
         highspd = self._piper.GetArmHighSpdInfoMsgs()
         gripper_fdb = self._piper.GetArmGripperMsgs()
 
-        joint_pos = self.read_positions(
-            return_radians=return_radians, normalize_gripper=normalize_gripper
-        )
+        joint_pos = self.read_positions(return_radians=return_radians)
         gripper_value = joint_pos[-1]
         joint_pos_only = joint_pos[:6]
 
         joint_speed = self.read_speeds(return_rad_per_s=return_radians)
 
-        ctrl = self.read_control_targets(
-            return_radians=return_radians, normalize_gripper=normalize_gripper
-        )
+        ctrl = self.read_control_targets(return_radians=return_radians)
         gripper_ctrl = ctrl[-1]
         joint_ctrl_only = ctrl[:6]
 

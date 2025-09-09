@@ -1,6 +1,6 @@
 import math
 import time
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 try:
     from .interface import C_PiperInterface_V2
@@ -44,7 +44,7 @@ class PiperArmController:
 
     单位说明：
     - 关节角反馈单位为毫度（0.001 度）。对外 API 默认返回弧度。
-    - 夹爪开合反馈单位为微米（µm）。对外 API 默认返回毫米（mm），也可通过归一化函数自定义。
+    - 夹爪开合反馈单位为微米（µm）。对外 API 返回毫米（mm）。
     """
 
     def __init__(
@@ -59,14 +59,8 @@ class PiperArmController:
         default_move_zero_speed: int = 30,
         default_move_policy_speed: int = 100,
         default_gripper_effort: int = 5000,
-        gripper_normalize_fn: Optional[Callable[[float], float]] = None,
-        gripper_denormalize_fn: Optional[Callable[[float], float]] = None,
     ) -> None:
-        """创建控制器实例。
-
-        - gripper_normalize_fn(mm)->normalized：可选，将夹爪开合（单位 mm）映射为归一化数值的函数。
-        - gripper_denormalize_fn(normalized)->mm：可选，上述映射的逆函数。
-        """
+        """创建控制器实例。"""
         self._piper = C_PiperInterface_V2(
             can_name=can_name,
             judge_flag=judge_flag,
@@ -78,10 +72,6 @@ class PiperArmController:
         self._default_move_zero_speed = _clamp(default_move_zero_speed, 0, 100)
         self._default_move_policy_speed = _clamp(default_move_policy_speed, 0, 100)
         self._default_gripper_effort = int(default_gripper_effort)
-
-        # 夹爪归一化钩子（可选）
-        self._gripper_normalize_fn = gripper_normalize_fn
-        self._gripper_denormalize_fn = gripper_denormalize_fn
 
     # ----------------------------
     # 连接 / 使能
@@ -102,11 +92,11 @@ class PiperArmController:
     # ----------------------------
     # 状态读取
     # ----------------------------
-    def get_joint_angles(self, *, in_radians: bool = True, normalize_gripper: bool = True) -> List[float]:
+    def get_joint_angles(self, *, in_radians: bool = True) -> List[float]:
         """获取当前 7 自由度角度 [j1..j6, gripper]。
 
         - 若 in_radians=True（默认），关节角以弧度返回；否则以度返回。
-        - 若 normalize_gripper=True 且提供了归一化函数，夹爪返回归一化值；否则返回毫米（mm）。
+        - 夹爪返回毫米（mm）。
         """
         highspd = self._piper.GetArmHighSpdInfoMsgs()
         gripper_fdb = self._piper.GetArmGripperMsgs()
@@ -125,12 +115,8 @@ class PiperArmController:
         else:
             joints = [v * 1e-3 for v in joint_mdeg]  # 度
 
-        # 夹爪：SDK 反馈单位为微米（µm）
-        gripper_mm = _um_to_mm(gripper_fdb.gripper_state.grippers_angle)
-        if normalize_gripper and self._gripper_normalize_fn is not None:
-            gripper_value = float(self._gripper_normalize_fn(gripper_mm))
-        else:
-            gripper_value = float(gripper_mm)
+        # 夹爪：SDK 反馈单位为微米（µm），转换为毫米
+        gripper_value = float(_um_to_mm(gripper_fdb.gripper_state.grippers_angle))
 
         return [
             joints[0],
@@ -165,17 +151,15 @@ class PiperArmController:
         gripper_value: float,
         *,
         joint_in_radians: bool = True,
-        gripper_is_normalized: bool = True,
         speed_percent: Optional[int] = None,
         gripper_effort: Optional[int] = None,
         small_delay_s: float = 0.001,
         enable_gripper_code: int = 0x01,
-
     ) -> None:
         """发送一次关节 + 夹爪控制命令。
 
         - joint_angles：长度为 6；当 joint_in_radians=True 时单位为弧度，否则为度。
-        - gripper_value：若 gripper_is_normalized=True 且提供了反归一化函数，则视为归一化值；否则视为毫米（mm）。
+        - gripper_value：夹爪开合值，单位为毫米（mm）。
         - speed_percent：可选，覆盖本次命令的速度比例。
         - gripper_effort：可选，夹爪力矩（0-5000 对应 0-5 N·m）。
         - small_delay_s：两帧之间的微小延时，避免拥塞。
@@ -184,19 +168,13 @@ class PiperArmController:
             raise ValueError("joint_angles 长度必须为 6（对应 j1..j6）")
 
         # 关节单位转换
-
-        # 关节单位转换
         if joint_in_radians:
             joints_mdeg = [_rad_to_mdeg(a) for a in joint_angles]
         else:
             joints_mdeg = [int(round(a * 1000.0)) for a in joint_angles]  # 度 -> 毫度
 
-        # 夹爪单位转换（转为 µm）
-        if gripper_is_normalized and self._gripper_denormalize_fn is not None:
-            gripper_mm = float(self._gripper_denormalize_fn(gripper_value))
-        else:
-            gripper_mm = float(gripper_value)
-        gripper_um = _mm_to_um(gripper_mm)
+        # 夹爪单位转换（毫米转为微米）
+        gripper_um = _mm_to_um(gripper_value)
 
         # 发送关节控制帧
         self._piper.JointCtrl(
@@ -249,24 +227,19 @@ class PiperArmController:
         self,
         gripper_value: float,
         *,
-        gripper_is_normalized: bool = True,
         gripper_effort: Optional[int] = None,
         enable_gripper_code: int = 0x01,
         small_delay_s: float = 0.001,
     ) -> None:
         """发送夹爪控制指令。
 
-        - gripper_value：若 gripper_is_normalized=True 且提供了反归一化函数，则视为归一化值；否则视为毫米（mm）。
+        - gripper_value：夹爪开合值，单位为毫米（mm）。
         - gripper_effort：可选，夹爪力矩（0-5000 对应 0-5 N·m）。
         - enable_gripper_code：夹爪使能代码。
         - small_delay_s：发送后的延时。
         """
-        # 夹爪单位转换（转为 µm）
-        if gripper_is_normalized and self._gripper_denormalize_fn is not None:
-            gripper_mm = float(self._gripper_denormalize_fn(gripper_value))
-        else:
-            gripper_mm = float(gripper_value)
-        gripper_um = _mm_to_um(gripper_mm)
+        # 夹爪单位转换（毫米转为微米）
+        gripper_um = _mm_to_um(gripper_value)
 
         # 发送夹爪控制帧
         effort = int(self._default_gripper_effort if gripper_effort is None else gripper_effort)
@@ -282,7 +255,6 @@ class PiperArmController:
         target_gripper_value: float,
         *,
         joint_in_radians: bool = True,
-        gripper_is_normalized: bool = True,
         speed_percent: Optional[int] = None,
         iterations: int = 10,
         iteration_interval_s: float = 0.1,
@@ -299,7 +271,6 @@ class PiperArmController:
                 target_joint_angles,
                 target_gripper_value,
                 joint_in_radians=joint_in_radians,
-                gripper_is_normalized=gripper_is_normalized,
                 speed_percent=speed_percent if speed_percent is not None else self._default_move_zero_speed,
             )
             time.sleep(iteration_interval_s)
@@ -310,7 +281,6 @@ class PiperArmController:
         target_gripper_value: float,
         *,
         joint_in_radians: bool = True,
-        gripper_is_normalized: bool = True,
         tolerance: float = 0.2,
         timeout_s: float = 8.0,
         check_interval_s: float = 0.5,
@@ -330,7 +300,7 @@ class PiperArmController:
 
         while True:
             # 读取当前
-            current = self.get_joint_angles(in_radians=True, normalize_gripper=gripper_is_normalized)
+            current = self.get_joint_angles(in_radians=True)
             current_joints = current[:6]
 
             # 比较误差

@@ -1,3 +1,3 @@
-from .pointcloud_viewer import PointCloudViewer
+from .viewer import Viewer
 
-__all__ = ['PointCloudViewer']
+__all__ = ['Viewer']

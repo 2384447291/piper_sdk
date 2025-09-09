@@ -140,16 +140,25 @@ class TrackingController:
         except Exception:
             return None
 
-    def request_average_pose(self, expected_samples: int = 50, wait_timeout: float = 10.0):
+    def request_average_pose(self, expected_samples: int = 10, wait_timeout: float = 20.0):
         logging.info("[Tracking] 等待 buffer 中的最终位姿样本...")
         translations = []
         quaternions = []
         start_time = time.time()
-        last_frame_idx = -1
-
+        
         # 先停止，触发 client 发布最终姿态
         self.send_stop()
-
+        
+        # 等待下位机开始发布最终位姿
+        logging.info("[Tracking] 等待下位机发布最终位姿...")
+        time.sleep(0.5)  # 给下位机更多时间
+        
+        # 记录停止命令发送后的时间戳，用于过滤数据
+        stop_command_time = time.time()
+        
+        # 使用时间戳而不是frame_idx来过滤数据，更可靠
+        last_processed_timestamp = 0.0
+        
         while (
             len(translations) < expected_samples
             and (time.time() - start_time) < wait_timeout
@@ -157,9 +166,11 @@ class TrackingController:
             try:
                 data = self.pubsub.get_latest_data(POSE_TOPIC)
                 if data is not None:
-                    frame_idx = int(data.get("frame_idx", 0))
-                    if frame_idx > last_frame_idx:
-                        last_frame_idx = frame_idx
+                    data_timestamp = data.get("timestamp", 0.0)
+                    
+                    # 只处理停止命令后发布的新数据（基于时间戳）
+                    if data_timestamp > last_processed_timestamp and data_timestamp >= stop_command_time:
+                        last_processed_timestamp = data_timestamp
                         pose = data["pose_matrix"]
                         R = pose[:3, :3].astype(np.float64)
                         t = pose[:3, 3].astype(np.float64)
@@ -170,10 +181,14 @@ class TrackingController:
                             q = -q
                         quaternions.append(q)
 
-                        if len(translations) % 10 == 0:
-                            logging.info(
-                                f"[Tracking] 已收集 {len(translations)}/{expected_samples} 样本"
-                            )
+                        logging.info(
+                            f"[Tracking] 已收集 {len(translations)}/{expected_samples} 样本 (timestamp: {data_timestamp:.3f})"
+                        )
+                    else:
+                        # 跳过旧数据或停止前的数据
+                        if data_timestamp < stop_command_time:
+                            logging.debug(f"[Tracking] 跳过停止前的数据: timestamp={data_timestamp:.3f} < {stop_command_time:.3f}")
+                        
                 time.sleep(0.01)
             except Exception as e:
                 logging.error(f"[Tracking] 读取位姿出错: {e}")

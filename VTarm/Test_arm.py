@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 
 from arm.piper_slave_arm import PiperSlaveArmReader
 from realsense.realsense import RealSense
-from visualization.pointcloud_viewer import PointCloudViewer
 
 # 相机外参（相对于主坐标系/夹爪中心）
 CAMERA_POS_MM = [-103.84, 8.5, 123.6]
@@ -130,7 +129,7 @@ def main():
                 min_distance=0.05, max_distance=0.2
             )
             if rs_pts_raw is not None and rs_pts_raw.shape[0] > 0:
-                world_pts_m = RealSense.transform_points_rs_to_world(rs_pts_raw)
+                world_pts_m = RealSense.transform_points_cam_to_world(rs_pts_raw) 
                 realsense_points = world_pts_m * 1000.0
                 realsense_colors = rs_colors_raw
                     
